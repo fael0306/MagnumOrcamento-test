@@ -1,5 +1,3 @@
-# Ambiente de teste
-
 # Conteúdo completo do arquivo streamlit_app (1).py após as alterações
 import streamlit as st
 import pandas as pd
@@ -712,7 +710,9 @@ elif menu == "Fluxo":
             fornecedor = st.selectbox("Fornecedor (opcional)", [""] + list(fornecedores["Fornecedor"]))
             if st.form_submit_button("Salvar"):
                 if obra not in obras["Obra"].values:
-                    st.error("Obra inválida.")
+                    st.error("Selecione uma obra válida.")
+                elif valor <= 0:
+                    st.error("O valor deve ser maior que zero.")
                 else:
                     novo = pd.DataFrame([{
                         "Data": data,
@@ -779,17 +779,37 @@ elif menu == "Fluxo":
         col_save, col_delete = st.columns(2)
         with col_save:
             if st.button("💾 Salvar alterações"):
-                fluxo_original = load("fluxo.csv", ["Data","Descricao","Categoria","Valor","Obra","Fornecedor"])
-                if obra_filtro != "Todas":
-                    fluxo_outras = fluxo_original[fluxo_original["Obra"] != obra_filtro]
-                    fluxo_final = pd.concat([fluxo_outras, edited_df], ignore_index=True)
+                # Validar dados editados
+                errors = []
+                # Verificar obras válidas
+                obras_validas = obras["Obra"].tolist()
+                for idx, row in edited_df.iterrows():
+                    if pd.isna(row["Obra"]) or row["Obra"] == "":
+                        errors.append(f"Linha {idx}: Obra não pode ser vazia.")
+                    elif row["Obra"] not in obras_validas:
+                        errors.append(f"Linha {idx}: Obra '{row['Obra']}' não cadastrada.")
+                    if pd.isna(row["Data"]):
+                        errors.append(f"Linha {idx}: Data inválida.")
+                    try:
+                        val = float(row["Valor"])
+                        if val <= 0:
+                            errors.append(f"Linha {idx}: Valor deve ser maior que zero.")
+                    except (ValueError, TypeError):
+                        errors.append(f"Linha {idx}: Valor inválido.")
+                if errors:
+                    for err in errors:
+                        st.error(err)
                 else:
-                    fluxo_final = edited_df
-                # Converter Data para string antes de salvar
-                fluxo_final["Data"] = pd.to_datetime(fluxo_final["Data"]).dt.date.astype(str)
-                save(fluxo_final, "fluxo.csv")
-                st.success("Alterações salvas com sucesso!")
-                st.rerun()
+                    fluxo_original = load("fluxo.csv", ["Data","Descricao","Categoria","Valor","Obra","Fornecedor"])
+                    if obra_filtro != "Todas":
+                        fluxo_outras = fluxo_original[fluxo_original["Obra"] != obra_filtro]
+                        fluxo_final = pd.concat([fluxo_outras, edited_df], ignore_index=True)
+                    else:
+                        fluxo_final = edited_df
+                    fluxo_final["Data"] = pd.to_datetime(fluxo_final["Data"]).dt.date.astype(str)
+                    save(fluxo_final, "fluxo.csv")
+                    st.success("Alterações salvas com sucesso!")
+                    st.rerun()
         with col_delete:
             selected_indices = st.multiselect(
                 "Selecione os índices das linhas que deseja excluir:",
@@ -1108,38 +1128,38 @@ elif menu == "Orçamentos":
     fornecedores = load("fornecedores.csv", ["Fornecedor","Contato","Telefone","Email","Observações"])
 
     with st.form("orc"):
-
         obra = st.selectbox("Obra", obras["Obra"] if not obras.empty else [])
         total = st.number_input("Total")
         file = st.file_uploader("Arquivo Excel", type=list(ALLOWED_EXCEL_EXTENSIONS))
         fornecedor = st.selectbox("Fornecedor (opcional)", [""] + list(fornecedores["Fornecedor"]))
 
         if st.form_submit_button("Salvar") and file:
-            is_valid, error_msg = validate_uploaded_file(file, ALLOWED_EXCEL_EXTENSIONS, MAX_EXCEL_SIZE_MB, "planilha Excel")
-            if not is_valid:
-                st.error(error_msg)
-                st.stop()
-            new_id = str(uuid.uuid4())
-            safe_filename = sanitize_filename(file.name)
-            name = f"orc_{new_id}_{safe_filename}"
-            path = os.path.join(ORC_DIR, name)
-        
-            with open(path, "wb") as f:
-                f.write(file.read())
-        
-            novo = pd.DataFrame([{
-                "ID": new_id,
-                "Obra": obra,
-                "Total": total,
-                "Arquivo": name,
-                "Data": datetime.now(),
-                "Fornecedor": fornecedor
-            }])
-        
-            orcamentos = pd.concat([orcamentos, novo], ignore_index=True)
-            save(orcamentos, "orcamentos.csv")
-            st.success("Orçamento salvo com sucesso!")
-            st.rerun()
+            if total <= 0:
+                st.error("O total do orçamento deve ser maior que zero.")
+            elif obra not in obras["Obra"].values:
+                st.error("Selecione uma obra válida.")
+            else:
+            # ... validação do arquivo e salvamento ...
+                new_id = str(uuid.uuid4())
+                safe_filename = sanitize_filename(file.name)
+                name = f"orc_{new_id}_{safe_filename}"
+                path = os.path.join(ORC_DIR, name)
+                with open(path, "wb") as f:
+                    f.write(file.read())
+            
+                novo = pd.DataFrame([{
+                    "ID": new_id,
+                    "Obra": obra,
+                    "Total": total,
+                    "Arquivo": name,
+                    "Data": datetime.now(),
+                    "Fornecedor": fornecedor
+                }])
+            
+                orcamentos = pd.concat([orcamentos, novo], ignore_index=True)
+                save(orcamentos, "orcamentos.csv")
+                st.success("Orçamento salvo com sucesso!")
+                st.rerun()
 
     # --- Exibição da tabela com botão de download ---
     if not orcamentos.empty:
@@ -1319,20 +1339,25 @@ elif menu == "Planejamento":
         valor_planejado = st.number_input("Valor Planejado", min_value=0.0, step=100.0)
         
         if st.button("Salvar Planejamento"):
-            # Remove entrada antiga se existir (para evitar duplicatas)
-            planejamento = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
-            planejamento = planejamento[
-                ~((planejamento["Obra"] == obra_sel) & (planejamento["Categoria"] == categoria_sel))
-            ]
-            novo = pd.DataFrame([{
-                "Obra": obra_sel,
-                "Categoria": categoria_sel,
-                "Valor": valor_planejado
-            }])
-            planejamento = pd.concat([planejamento, novo], ignore_index=True)
-            save(planejamento, "planejamento.csv")
-            st.success("Planejamento salvo!")
-            st.rerun()
+                if valor_planejado <= 0:
+                    st.error("O valor planejado deve ser maior que zero.")
+                elif obra_sel not in obras["Obra"].values:
+                    st.error("Selecione uma obra válida.")
+                else:
+                    # Remove entrada antiga se existir (para evitar duplicatas)
+                    planejamento = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
+                    planejamento = planejamento[
+                        ~((planejamento["Obra"] == obra_sel) & (planejamento["Categoria"] == categoria_sel))
+                    ]
+                    novo = pd.DataFrame([{
+                        "Obra": obra_sel,
+                        "Categoria": categoria_sel,
+                        "Valor": valor_planejado
+                    }])
+                    planejamento = pd.concat([planejamento, novo], ignore_index=True)
+                    save(planejamento, "planejamento.csv")
+                    st.success("Planejamento salvo!")
+                    st.rerun()
     
     # ----- Exibição da tabela de planejamento atual -----
     st.subheader("📋 Planejamentos Cadastrados")
@@ -1443,11 +1468,14 @@ elif menu == "Importação":
                     if df_import["Data"].isna().any():
                         st.error("Existem datas inválidas. Use o formato AAAA-MM-DD.")
                         st.stop()
-
+                        
                     # Validar valores numéricos
                     df_import["Valor"] = pd.to_numeric(df_import["Valor"], errors="coerce")
                     if df_import["Valor"].isna().any():
                         st.error("Existem valores não numéricos na coluna 'Valor'.")
+                        st.stop()
+                    if (df_import["Valor"] <= 0).any():
+                        st.error("Todos os valores devem ser maiores que zero.")
                         st.stop()
 
                     # Validar categoria
