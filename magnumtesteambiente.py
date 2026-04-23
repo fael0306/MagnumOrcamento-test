@@ -76,10 +76,13 @@ def autenticar(login, senha):
     if not user_data:
         return False, None, None
     hash_salvo = user_data["senha_hash"]
-    if bcrypt.checkpw(senha.strip().encode('utf-8'), hash_salvo.encode('utf-8')):
-        role = user_data.get("role", "usuario")
-        nome = user_data.get("nome", login)
-        return True, role, nome
+    try:
+        if bcrypt.checkpw(senha.strip().encode('utf-8'), hash_salvo.encode('utf-8')):
+            role = user_data.get("role", "usuario")
+            nome = user_data.get("nome", login)
+            return True, role, nome
+    except Exception:
+        pass
     return False, None, None
 
 if "user" not in st.session_state:
@@ -836,21 +839,36 @@ elif menu == "Fluxo":
 # PESSOAS
 # =========================================================
 elif menu == "Pessoas":
-
     st.title("Pessoas")
 
     edit = st.data_editor(pessoas, num_rows="dynamic")
 
     if st.button("Salvar"):
+        # NOVO: Validações obrigatórias
+        errors = []
+        # Verificar nomes vazios
+        if edit["Pessoa"].isnull().any() or (edit["Pessoa"].astype(str).str.strip() == "").any():
+            errors.append("O nome da pessoa não pode ser vazio.")
+        # Verificar nomes duplicados
+        if not edit["Pessoa"].is_unique:
+            errors.append("Existem pessoas com nomes duplicados.")
+        
         edit["Percentual"] = pd.to_numeric(edit["Percentual"], errors="coerce").fillna(0)
-
+        # Verificar percentuais individuais entre 0 e 100
+        if (edit["Percentual"] < 0).any() or (edit["Percentual"] > 100).any():
+            errors.append("Os percentuais devem estar entre 0 e 100.")
+        # Verificar soma igual a 100
         if not math.isclose(edit["Percentual"].sum(), 100, rel_tol=1e-9, abs_tol=1e-6):
-            st.error("A soma dos percentuais deve ser 100%")
+            errors.append("A soma dos percentuais deve ser 100%.")
+        
+        if errors:
+            for err in errors:
+                st.error(err)
         else:
             pessoas = edit
             save(pessoas, "pessoas.csv")
             st.success("Pessoas salvas com sucesso!")
-
+            st.rerun()
 
 # =========================================================
 # FECHAMENTO
@@ -1042,28 +1060,41 @@ elif menu == "Diário":
     # FORMULÁRIO (POST)
     # =========================================================
     with st.form("diario"):
-
         data = st.date_input("Data")
         obra = st.selectbox("Obra", obras["Obra"] if not obras.empty else [])
         resp = st.text_input("Responsável")
         desc = st.text_area("Descrição")
         img = st.file_uploader("Imagem", type=list(ALLOWED_IMAGE_EXTENSIONS))
-
+    
         if st.form_submit_button("Publicar"):
-
+            # NOVO: Validação de campos obrigatórios
+            errors = []
+            if not obra:
+                errors.append("Selecione uma obra.")
+            if not resp.strip():
+                errors.append("O campo 'Responsável' é obrigatório.")
+            if not desc.strip():
+                errors.append("A descrição não pode estar vazia.")
+            
+            if errors:
+                for err in errors:
+                    st.error(err)
+                st.stop()
+            
             img_path = None
             if img is not None:
                 is_valid, error_msg = validate_uploaded_file(img, ALLOWED_IMAGE_EXTENSIONS, MAX_IMAGE_SIZE_MB, "imagem")
                 if not is_valid:
                     st.error(error_msg)
-                    st.stop()  # impede o salvamento
+                    st.stop()
+            
             if img:
                 import time
                 safe_name = sanitize_filename(img.name)
                 img_path = os.path.join(DIARIO_DIR, f"{time.time()}_{safe_name}")
                 with open(img_path, "wb") as f:
                     f.write(img.read())
-
+    
             novo = pd.DataFrame([{
                 "Data": data,
                 "Obra": obra,
@@ -1071,10 +1102,9 @@ elif menu == "Diário":
                 "Responsavel": resp,
                 "Imagem": img_path
             }])
-
+    
             diario = pd.concat([diario, novo], ignore_index=True)
             save(diario, "diario.csv")
-
             st.rerun()
 
     st.divider()
@@ -1132,34 +1162,46 @@ elif menu == "Orçamentos":
         total = st.number_input("Total")
         file = st.file_uploader("Arquivo Excel", type=list(ALLOWED_EXCEL_EXTENSIONS))
         fornecedor = st.selectbox("Fornecedor (opcional)", [""] + list(fornecedores["Fornecedor"]))
-
-        if st.form_submit_button("Salvar") and file:
+    
+        if st.form_submit_button("Salvar"):
+            # NOVO: Validação de campos obrigatórios
+            errors = []
+            if not obra:
+                errors.append("Selecione uma obra.")
             if total <= 0:
-                st.error("O total do orçamento deve ser maior que zero.")
-            elif obra not in obras["Obra"].values:
-                st.error("Selecione uma obra válida.")
+                errors.append("O total do orçamento deve ser maior que zero.")
+            if file is None:
+                errors.append("É obrigatório enviar um arquivo Excel.")
             else:
-            # ... validação do arquivo e salvamento ...
-                new_id = str(uuid.uuid4())
-                safe_filename = sanitize_filename(file.name)
-                name = f"orc_{new_id}_{safe_filename}"
-                path = os.path.join(ORC_DIR, name)
-                with open(path, "wb") as f:
-                    f.write(file.read())
+                is_valid, error_msg = validate_uploaded_file(file, ALLOWED_EXCEL_EXTENSIONS, MAX_EXCEL_SIZE_MB, "planilha Excel")
+                if not is_valid:
+                    errors.append(error_msg)
             
-                novo = pd.DataFrame([{
-                    "ID": new_id,
-                    "Obra": obra,
-                    "Total": total,
-                    "Arquivo": name,
-                    "Data": datetime.now(),
-                    "Fornecedor": fornecedor
-                }])
+            if errors:
+                for err in errors:
+                    st.error(err)
+                st.stop()
             
-                orcamentos = pd.concat([orcamentos, novo], ignore_index=True)
-                save(orcamentos, "orcamentos.csv")
-                st.success("Orçamento salvo com sucesso!")
-                st.rerun()
+            new_id = str(uuid.uuid4())
+            safe_filename = sanitize_filename(file.name)
+            name = f"orc_{new_id}_{safe_filename}"
+            path = os.path.join(ORC_DIR, name)
+            with open(path, "wb") as f:
+                f.write(file.read())
+        
+            novo = pd.DataFrame([{
+                "ID": new_id,
+                "Obra": obra,
+                "Total": total,
+                "Arquivo": name,
+                "Data": datetime.now(),
+                "Fornecedor": fornecedor
+            }])
+        
+            orcamentos = pd.concat([orcamentos, novo], ignore_index=True)
+            save(orcamentos, "orcamentos.csv")
+            st.success("Orçamento salvo com sucesso!")
+            st.rerun()
 
     # --- Exibição da tabela com botão de download ---
     if not orcamentos.empty:
@@ -1207,13 +1249,25 @@ elif menu == "Orçamentos":
 elif menu == "Fornecedores":
     st.title("Fornecedores / Prestadores de Serviço")
 
+    # NOVO: Validação ao editar
     edit = st.data_editor(fornecedores, num_rows="dynamic")
 
     if st.button("Salvar"):
-        fornecedores = edit
-        save(fornecedores, "fornecedores.csv")
-        st.success("Dados salvos com sucesso!")
-        st.rerun()
+        # Validar campos obrigatórios e duplicatas
+        errors = []
+        if edit["Fornecedor"].isnull().any() or (edit["Fornecedor"].astype(str).str.strip() == "").any():
+            errors.append("O nome do fornecedor não pode ser vazio.")
+        if not edit["Fornecedor"].is_unique:
+            errors.append("Existem fornecedores com nomes duplicados.")
+        
+        if errors:
+            for err in errors:
+                st.error(err)
+        else:
+            fornecedores = edit
+            save(fornecedores, "fornecedores.csv")
+            st.success("Dados salvos com sucesso!")
+            st.rerun()
 
     st.dataframe(fornecedores)
 
@@ -1230,10 +1284,26 @@ elif menu == "Reembolsos":
             obra = st.selectbox("Obra", obras["Obra"] if not obras.empty else [])
             funcionario = st.text_input("Funcionário solicitante")
         with col2:
-            valor = st.number_input("Valor a reembolsar", min_value=0.01, step=0.01)
+            valor = st.number_input("Valor a reembolsar", min_value=0.0, step=0.01)
             descricao = st.text_area("Descrição do gasto")
         
         if st.form_submit_button("Registrar solicitação"):
+            # NOVO: Validação de campos obrigatórios
+            errors = []
+            if not obra:
+                errors.append("Selecione uma obra.")
+            if not funcionario.strip():
+                errors.append("O nome do funcionário é obrigatório.")
+            if valor <= 0:
+                errors.append("O valor deve ser maior que zero.")
+            if not descricao.strip():
+                errors.append("A descrição do gasto é obrigatória.")
+            
+            if errors:
+                for err in errors:
+                    st.error(err)
+                st.stop()
+            
             novo = pd.DataFrame([{
                 "ID": str(uuid.uuid4()),
                 "DataSolicitacao": data_sol,
@@ -1244,7 +1314,6 @@ elif menu == "Reembolsos":
                 "Status": "pendente",
                 "DataPagamento": ""
             }])
-            # Carregar do disco e concatenar
             reembolsos = load("reembolsos.csv", ["ID","DataSolicitacao","Obra","Funcionario","Descricao","Valor","Status","DataPagamento"])
             reembolsos = pd.concat([reembolsos, novo], ignore_index=True)
             save(reembolsos, "reembolsos.csv")
@@ -1339,25 +1408,30 @@ elif menu == "Planejamento":
         valor_planejado = st.number_input("Valor Planejado", min_value=0.0, step=100.0)
         
         if st.button("Salvar Planejamento"):
-                if valor_planejado <= 0:
-                    st.error("O valor planejado deve ser maior que zero.")
-                elif obra_sel not in obras["Obra"].values:
-                    st.error("Selecione uma obra válida.")
-                else:
-                    # Remove entrada antiga se existir (para evitar duplicatas)
-                    planejamento = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
-                    planejamento = planejamento[
-                        ~((planejamento["Obra"] == obra_sel) & (planejamento["Categoria"] == categoria_sel))
-                    ]
-                    novo = pd.DataFrame([{
-                        "Obra": obra_sel,
-                        "Categoria": categoria_sel,
-                        "Valor": valor_planejado
-                    }])
-                    planejamento = pd.concat([planejamento, novo], ignore_index=True)
-                    save(planejamento, "planejamento.csv")
-                    st.success("Planejamento salvo!")
-                    st.rerun()
+            # NOVO: Validação
+            errors = []
+            if not obra_sel:
+                errors.append("Selecione uma obra.")
+            if valor_planejado <= 0:
+                errors.append("O valor planejado deve ser maior que zero.")
+            
+            if errors:
+                for err in errors:
+                    st.error(err)
+            else:
+                planejamento = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
+                planejamento = planejamento[
+                    ~((planejamento["Obra"] == obra_sel) & (planejamento["Categoria"] == categoria_sel))
+                ]
+                novo = pd.DataFrame([{
+                    "Obra": obra_sel,
+                    "Categoria": categoria_sel,
+                    "Valor": valor_planejado
+                }])
+                planejamento = pd.concat([planejamento, novo], ignore_index=True)
+                save(planejamento, "planejamento.csv")
+                st.success("Planejamento salvo!")
+                st.rerun()
     
     # ----- Exibição da tabela de planejamento atual -----
     st.subheader("📋 Planejamentos Cadastrados")
@@ -1455,153 +1529,171 @@ elif menu == "Importação":
             st.dataframe(df_import.head(10))
 
             if st.button("✅ Confirmar importação"):
-                if tipo_import == "Fluxo Financeiro":
-                    # Validações
-                    required_cols = ["Data", "Descricao", "Categoria", "Valor", "Obra"]
-                    missing = [col for col in required_cols if col not in df_import.columns]
-                    if missing:
-                        st.error(f"Colunas obrigatórias faltando: {missing}")
-                        st.stop()
+                # NOVO: Loading states com spinner e status
+                with st.spinner("Processando importação..."):
+                    if tipo_import == "Fluxo Financeiro":
+                        with st.status("Validando dados do Fluxo Financeiro...", expanded=True) as status:
+                            # Validações
+                            required_cols = ["Data", "Descricao", "Categoria", "Valor", "Obra"]
+                            missing = [col for col in required_cols if col not in df_import.columns]
+                            if missing:
+                                st.error(f"Colunas obrigatórias faltando: {missing}")
+                                st.stop()
 
-                    # Validar datas e remover horário
-                    df_import["Data"] = pd.to_datetime(df_import["Data"], errors="coerce").dt.date
-                    if df_import["Data"].isna().any():
-                        st.error("Existem datas inválidas. Use o formato AAAA-MM-DD.")
-                        st.stop()
+                            # Validar datas e remover horário
+                            df_import["Data"] = pd.to_datetime(df_import["Data"], errors="coerce").dt.date
+                            if df_import["Data"].isna().any():
+                                st.error("Existem datas inválidas. Use o formato AAAA-MM-DD.")
+                                st.stop()
+                                
+                            # Validar valores numéricos
+                            df_import["Valor"] = pd.to_numeric(df_import["Valor"], errors="coerce")
+                            if df_import["Valor"].isna().any():
+                                st.error("Existem valores não numéricos na coluna 'Valor'.")
+                                st.stop()
+                            if (df_import["Valor"] <= 0).any():
+                                st.error("Todos os valores devem ser maiores que zero.")
+                                st.stop()
+
+                            # Validar categoria
+                            categorias_validas = ["Entrada", "Saída"]
+                            categorias_import = df_import["Categoria"].str.strip()
+                            if not categorias_import.isin(categorias_validas).all():
+                                st.error("A coluna 'Categoria' deve conter apenas 'Entrada' ou 'Saída'.")
+                                st.stop()
+
+                            # Validar se obras existem
+                            obras_existentes = obras["Obra"].tolist()
+                            obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
+                            if len(obras_invalidas) > 0:
+                                st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
+                                st.stop()
+
+                            # Adicionar coluna Fornecedor se não existir
+                            if "Fornecedor" not in df_import.columns:
+                                df_import["Fornecedor"] = ""
+
+                            status.update(label="Validação concluída. Salvando dados...", state="running")
+
+                            # Concatenar com fluxo existente (carregando do CSV mais recente)
+                            fluxo_atual = load("fluxo.csv", ["Data","Descricao","Categoria","Valor","Obra","Fornecedor"])
+                            novo_fluxo = pd.concat([fluxo_atual, df_import[["Data","Descricao","Categoria","Valor","Obra","Fornecedor"]]], ignore_index=True)
+                            save(novo_fluxo, "fluxo.csv")
+                            
+                            # Atualizar estado global (opcional, mas garante que outras partes vejam o novo dado)
+                            st.session_state["fluxo"] = novo_fluxo
+                            
+                            status.update(label="Importação concluída!", state="complete")
                         
-                    # Validar valores numéricos
-                    df_import["Valor"] = pd.to_numeric(df_import["Valor"], errors="coerce")
-                    if df_import["Valor"].isna().any():
-                        st.error("Existem valores não numéricos na coluna 'Valor'.")
-                        st.stop()
-                    if (df_import["Valor"] <= 0).any():
-                        st.error("Todos os valores devem ser maiores que zero.")
-                        st.stop()
+                        st.success(f"{len(df_import)} lançamentos importados com sucesso!")
+                        st.balloons()
 
-                    # Validar categoria
-                    categorias_validas = ["Entrada", "Saída"]
-                    categorias_import = df_import["Categoria"].str.strip()
-                    if not categorias_import.isin(categorias_validas).all():
-                        st.error("A coluna 'Categoria' deve conter apenas 'Entrada' ou 'Saída'.")
-                        st.stop()
+                    elif tipo_import == "Orçamentos":
+                        with st.status("Validando dados de Orçamentos...", expanded=True) as status:
+                            required_cols = ["Obra", "Total"]
+                            missing = [col for col in required_cols if col not in df_import.columns]
+                            if missing:
+                                st.error(f"Colunas obrigatórias faltando: {missing}")
+                                st.stop()
 
-                    # Validar se obras existem
-                    obras_existentes = obras["Obra"].tolist()
-                    obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
-                    if len(obras_invalidas) > 0:
-                        st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
-                        st.stop()
+                            # Validar Total numérico
+                            df_import["Total"] = pd.to_numeric(df_import["Total"], errors="coerce")
+                            if df_import["Total"].isna().any():
+                                st.error("Existem valores não numéricos na coluna 'Total'.")
+                                st.stop()
 
-                    # Adicionar coluna Fornecedor se não existir
-                    if "Fornecedor" not in df_import.columns:
-                        df_import["Fornecedor"] = ""
+                            # Validar obras existentes
+                            obras_existentes = obras["Obra"].tolist()
+                            obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
+                            if len(obras_invalidas) > 0:
+                                st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
+                                st.stop()
 
-                    # Concatenar com fluxo existente (carregando do CSV mais recente)
-                    fluxo_atual = load("fluxo.csv", ["Data","Descricao","Categoria","Valor","Obra","Fornecedor"])
-                    novo_fluxo = pd.concat([fluxo_atual, df_import[["Data","Descricao","Categoria","Valor","Obra","Fornecedor"]]], ignore_index=True)
-                    save(novo_fluxo, "fluxo.csv")
-                    
-                    # Atualizar estado global (opcional, mas garante que outras partes vejam o novo dado)
-                    st.session_state["fluxo"] = novo_fluxo
-                    
-                    st.success(f"{len(df_import)} lançamentos importados com sucesso!")
-                    st.balloons()
+                            status.update(label="Validação concluída. Salvando arquivo e registros...", state="running")
 
-                elif tipo_import == "Orçamentos":
-                    required_cols = ["Obra", "Total"]
-                    missing = [col for col in required_cols if col not in df_import.columns]
-                    if missing:
-                        st.error(f"Colunas obrigatórias faltando: {missing}")
-                        st.stop()
+                            # Salvar o arquivo Excel original (backup) na pasta de orçamentos
+                            import time
+                            timestamp = int(time.time())
+                            safe_filename = sanitize_filename(uploaded_file.name)
+                            arquivo_nome = f"orc_import_{timestamp}_{safe_filename}"
+                            arquivo_path = os.path.join(ORC_DIR, arquivo_nome)
+                            with open(arquivo_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())  # salva o conteúdo original
 
-                    # Validar Total numérico
-                    df_import["Total"] = pd.to_numeric(df_import["Total"], errors="coerce")
-                    if df_import["Total"].isna().any():
-                        st.error("Existem valores não numéricos na coluna 'Total'.")
-                        st.stop()
+                            # Preparar dados para inserção
+                            novos_orc = []
+                            for _, row in df_import.iterrows():
+                                new_id = str(uuid.uuid4())
+                                novo = {
+                                    "ID": new_id,
+                                    "Obra": row["Obra"],
+                                    "Total": row["Total"],
+                                    "Arquivo": arquivo_nome,   # referência ao arquivo salvo
+                                    "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "Fornecedor": row.get("Fornecedor", "")
+                                }
+                                novos_orc.append(novo)
 
-                    # Validar obras existentes
-                    obras_existentes = obras["Obra"].tolist()
-                    obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
-                    if len(obras_invalidas) > 0:
-                        st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
-                        st.stop()
+                            orc_atual = load("orcamentos.csv", ["ID","Obra","Total","Arquivo","Data"])
+                            # Garantir que a coluna 'Fornecedor' exista no CSV carregado
+                            if "Fornecedor" not in orc_atual.columns:
+                                orc_atual["Fornecedor"] = ""
+                            novo_orc = pd.concat([orc_atual, pd.DataFrame(novos_orc)], ignore_index=True)
+                            save(novo_orc, "orcamentos.csv")
+                            
+                            st.session_state["orcamentos"] = novo_orc
+                            
+                            status.update(label="Importação de orçamentos concluída!", state="complete")
+                        
+                        st.success(f"{len(novos_orc)} orçamentos importados com sucesso! Arquivo salvo como {arquivo_nome}")
+                        st.balloons()
 
-                    # Salvar o arquivo Excel original (backup) na pasta de orçamentos
-                    import time
-                    timestamp = int(time.time())
-                    safe_filename = sanitize_filename(uploaded_file.name)
-                    arquivo_nome = f"orc_import_{timestamp}_{safe_filename}"
-                    arquivo_path = os.path.join(ORC_DIR, arquivo_nome)
-                    with open(arquivo_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())  # salva o conteúdo original
+                    elif tipo_import == "Planejamento":
+                        with st.status("Validando dados de Planejamento...", expanded=True) as status:
+                            required_cols = ["Obra", "Categoria", "Valor"]
+                            missing = [col for col in required_cols if col not in df_import.columns]
+                            if missing:
+                                st.error(f"Colunas obrigatórias faltando: {missing}")
+                                st.stop()
 
-                    # Preparar dados para inserção
-                    novos_orc = []
-                    for _, row in df_import.iterrows():
-                        new_id = str(uuid.uuid4())
-                        novo = {
-                            "ID": new_id,
-                            "Obra": row["Obra"],
-                            "Total": row["Total"],
-                            "Arquivo": arquivo_nome,   # referência ao arquivo salvo
-                            "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "Fornecedor": row.get("Fornecedor", "")
-                        }
-                        novos_orc.append(novo)
+                            # Validar Valor numérico
+                            df_import["Valor"] = pd.to_numeric(df_import["Valor"], errors="coerce")
+                            if df_import["Valor"].isna().any():
+                                st.error("Existem valores não numéricos na coluna 'Valor'.")
+                                st.stop()
 
-                    orc_atual = load("orcamentos.csv", ["ID","Obra","Total","Arquivo","Data"])
-                    # Garantir que a coluna 'Fornecedor' exista no CSV carregado
-                    if "Fornecedor" not in orc_atual.columns:
-                        orc_atual["Fornecedor"] = ""
-                    novo_orc = pd.concat([orc_atual, pd.DataFrame(novos_orc)], ignore_index=True)
-                    save(novo_orc, "orcamentos.csv")
-                    
-                    st.session_state["orcamentos"] = novo_orc
-                    
-                    st.success(f"{len(novos_orc)} orçamentos importados com sucesso! Arquivo salvo como {arquivo_nome}")
-                    st.balloons()
+                            # Validar obras existentes
+                            obras_existentes = obras["Obra"].tolist()
+                            obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
+                            if len(obras_invalidas) > 0:
+                                st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
+                                st.stop()
 
-                elif tipo_import == "Planejamento":
-                    required_cols = ["Obra", "Categoria", "Valor"]
-                    missing = [col for col in required_cols if col not in df_import.columns]
-                    if missing:
-                        st.error(f"Colunas obrigatórias faltando: {missing}")
-                        st.stop()
+                            # Validar categorias
+                            categorias_validas = ["Entrada", "Saída"]
+                            cats_invalidas = df_import[~df_import["Categoria"].isin(categorias_validas)]["Categoria"].unique()
+                            if len(cats_invalidas) > 0:
+                                st.error(f"Categorias devem ser 'Entrada' ou 'Saída'. Inválidas: {', '.join(cats_invalidas)}")
+                                st.stop()
 
-                    # Validar Valor numérico
-                    df_import["Valor"] = pd.to_numeric(df_import["Valor"], errors="coerce")
-                    if df_import["Valor"].isna().any():
-                        st.error("Existem valores não numéricos na coluna 'Valor'.")
-                        st.stop()
+                            status.update(label="Validação concluída. Atualizando planejamento...", state="running")
 
-                    # Validar obras existentes
-                    obras_existentes = obras["Obra"].tolist()
-                    obras_invalidas = df_import[~df_import["Obra"].isin(obras_existentes)]["Obra"].unique()
-                    if len(obras_invalidas) > 0:
-                        st.error(f"As seguintes obras não estão cadastradas: {', '.join(obras_invalidas)}")
-                        st.stop()
-
-                    # Validar categorias
-                    categorias_validas = ["Entrada", "Saída"]
-                    cats_invalidas = df_import[~df_import["Categoria"].isin(categorias_validas)]["Categoria"].unique()
-                    if len(cats_invalidas) > 0:
-                        st.error(f"Categorias devem ser 'Entrada' ou 'Saída'. Inválidas: {', '.join(cats_invalidas)}")
-                        st.stop()
-
-                    # Substituir planejamento existente para as obras/categorias importadas
-                    planejamento_atual = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
-                    # Remover registros que serão sobrescritos
-                    chaves_import = df_import[["Obra", "Categoria"]].drop_duplicates()
-                    for _, row in chaves_import.iterrows():
-                        planejamento_atual = planejamento_atual[
-                            ~((planejamento_atual["Obra"] == row["Obra"]) & 
-                              (planejamento_atual["Categoria"] == row["Categoria"]))
-                        ]
-                    planejamento_novo = pd.concat([planejamento_atual, df_import], ignore_index=True)
-                    save(planejamento_novo, "planejamento.csv")
-                    st.success(f"{len(df_import)} registros de planejamento importados!")
-                    st.rerun()
+                            # Substituir planejamento existente para as obras/categorias importadas
+                            planejamento_atual = load("planejamento.csv", ["Obra", "Categoria", "Valor"])
+                            # Remover registros que serão sobrescritos
+                            chaves_import = df_import[["Obra", "Categoria"]].drop_duplicates()
+                            for _, row in chaves_import.iterrows():
+                                planejamento_atual = planejamento_atual[
+                                    ~((planejamento_atual["Obra"] == row["Obra"]) & 
+                                      (planejamento_atual["Categoria"] == row["Categoria"]))
+                                ]
+                            planejamento_novo = pd.concat([planejamento_atual, df_import], ignore_index=True)
+                            save(planejamento_novo, "planejamento.csv")
+                            
+                            status.update(label="Importação de planejamento concluída!", state="complete")
+                        
+                        st.success(f"{len(df_import)} registros de planejamento importados!")
+                        st.rerun()
 
         except Exception as e:
             st.error(f"Erro ao processar o arquivo: {str(e)}")
@@ -1707,228 +1799,229 @@ elif menu == "Relatório de Obra":
 
     # Botão para gerar PDF
     if st.button("📑 Gerar Relatório PDF"):
-        # Coletar dados da obra
-        fluxo_obra = fluxo[fluxo["Obra"] == obra_selecionada].copy()
-        diario_obra = diario[diario["Obra"] == obra_selecionada].copy()
-        planejamento_obra = planejamento[planejamento["Obra"] == obra_selecionada].copy()
-        orcamentos_obra = orcamentos[orcamentos["Obra"] == obra_selecionada].copy()
-
-        # Processar dados financeiros
-        if not fluxo_obra.empty:
-            fluxo_obra["Valor"] = pd.to_numeric(fluxo_obra["Valor"], errors="coerce")
-            fluxo_obra = fluxo_obra.dropna(subset=["Valor"])
-            fluxo_obra["Data"] = pd.to_datetime(fluxo_obra["Data"], errors="coerce")
-            fluxo_obra = fluxo_obra.dropna(subset=["Data"])
-
-            # Normalizar categoria
-            fluxo_obra["Categoria_norm"] = fluxo_obra["Categoria"].apply(normalize_text)
-            fluxo_obra["Tipo"] = fluxo_obra["Categoria_norm"].map({"entrada": "Receita", "saida": "Custo"})
-            fluxo_obra = fluxo_obra.dropna(subset=["Tipo"])
-
-            receita_total = fluxo_obra[fluxo_obra["Tipo"] == "Receita"]["Valor"].sum()
-            custo_total = fluxo_obra[fluxo_obra["Tipo"] == "Custo"]["Valor"].sum()
-            lucro_total = receita_total - custo_total
-            margem = (lucro_total / receita_total * 100) if receita_total > 0 else 0.0
-        else:
-            receita_total = custo_total = lucro_total = 0.0
-            margem = 0.0
-
-        # Planejado vs Realizado
-        categorias_resumo = []
-        if not planejamento_obra.empty:
-            planejamento_obra["Valor"] = pd.to_numeric(planejamento_obra["Valor"], errors="coerce")
-            realizado_cat = fluxo_obra.groupby("Categoria")["Valor"].sum().reset_index()
-            realizado_cat = realizado_cat.rename(columns={"Valor": "Realizado"})
-            comp = pd.merge(planejamento_obra, realizado_cat, on="Categoria", how="left")
-            comp["Realizado"] = comp["Realizado"].fillna(0)
-            comp["Diferença"] = comp["Valor"] - comp["Realizado"]
-            comp["% Executado"] = (comp["Realizado"] / comp["Valor"]) * 100
-            comp["% Executado"] = comp["% Executado"].clip(0, 100)
-            categorias_resumo = comp.to_dict("records")
-        else:
+        with st.spinner("Gerando relatório PDF... Aguarde."):
+            # Coletar dados da obra
+            fluxo_obra = fluxo[fluxo["Obra"] == obra_selecionada].copy()
+            diario_obra = diario[diario["Obra"] == obra_selecionada].copy()
+            planejamento_obra = planejamento[planejamento["Obra"] == obra_selecionada].copy()
+            orcamentos_obra = orcamentos[orcamentos["Obra"] == obra_selecionada].copy()
+    
+            # Processar dados financeiros
+            if not fluxo_obra.empty:
+                fluxo_obra["Valor"] = pd.to_numeric(fluxo_obra["Valor"], errors="coerce")
+                fluxo_obra = fluxo_obra.dropna(subset=["Valor"])
+                fluxo_obra["Data"] = pd.to_datetime(fluxo_obra["Data"], errors="coerce")
+                fluxo_obra = fluxo_obra.dropna(subset=["Data"])
+    
+                # Normalizar categoria
+                fluxo_obra["Categoria_norm"] = fluxo_obra["Categoria"].apply(normalize_text)
+                fluxo_obra["Tipo"] = fluxo_obra["Categoria_norm"].map({"entrada": "Receita", "saida": "Custo"})
+                fluxo_obra = fluxo_obra.dropna(subset=["Tipo"])
+    
+                receita_total = fluxo_obra[fluxo_obra["Tipo"] == "Receita"]["Valor"].sum()
+                custo_total = fluxo_obra[fluxo_obra["Tipo"] == "Custo"]["Valor"].sum()
+                lucro_total = receita_total - custo_total
+                margem = (lucro_total / receita_total * 100) if receita_total > 0 else 0.0
+            else:
+                receita_total = custo_total = lucro_total = 0.0
+                margem = 0.0
+    
+            # Planejado vs Realizado
             categorias_resumo = []
-
-        # Histórico do diário
-        if not diario_obra.empty:
-            diario_obra["Data"] = pd.to_datetime(diario_obra["Data"], errors="coerce")
-            diario_obra = diario_obra.sort_values("Data", ascending=False).head(20)
-            eventos = diario_obra[["Data", "Responsavel", "Descricao"]].to_dict("records")
-        else:
-            eventos = []
-
-        # Orçamentos da obra
-        if not orcamentos_obra.empty:
-            # Ordenar por data decrescente e formatar colunas
-            orcamentos_obra["Data"] = pd.to_datetime(orcamentos_obra["Data"], errors="coerce")
-            orcamentos_obra = orcamentos_obra.sort_values("Data", ascending=False)
-            orcamentos_lista = orcamentos_obra[["Data", "Fornecedor", "Total", "Arquivo"]].to_dict("records")
-        else:
-            orcamentos_lista = []
-
-        # Informações adicionais
-        percentual_caixa = obras.loc[obras["Obra"] == obra_selecionada, "PercentualCaixa"].iloc[0]
-        data_geracao = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-        # Gerar PDF com reportlab
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import cm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import io
-
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
-        styles = getSampleStyleSheet()
-        story = []
-
-        # Título
-        title_style = ParagraphStyle(
-            'TitleStyle',
-            parent=styles['Heading1'],
-            fontSize=20,
-            alignment=1,  # center
-            spaceAfter=20
-        )
-        story.append(Paragraph(f"Relatório da Obra: {obra_selecionada}", title_style))
-        story.append(Spacer(1, 0.5*cm))
-
-        # Data de geração
-        story.append(Paragraph(f"<i>Gerado em {data_geracao}</i>", styles['Normal']))
-        story.append(Spacer(1, 1*cm))
-
-        # Seção: Resumo Financeiro
-        story.append(Paragraph("1. Resumo Financeiro", styles['Heading2']))
-        story.append(Spacer(1, 0.3*cm))
-
-        dados_financeiros = [
-            ["Receita Total", f"R$ {receita_total:,.2f}"],
-            ["Custo Total", f"R$ {custo_total:,.2f}"],
-            ["Lucro Líquido", f"R$ {lucro_total:,.2f}"],
-            ["Margem de Lucro", f"{margem:.1f}%"],
-            ["% Caixa Retido", f"{percentual_caixa:.1f}%"],
-            ["Valor Retido (Caixa)", f"R$ {lucro_total * percentual_caixa / 100:,.2f}"],
-            ["Valor a Distribuir", f"R$ {lucro_total * (1 - percentual_caixa/100):,.2f}"]
-        ]
-
-        table_fin = Table(dados_financeiros, colWidths=[6*cm, 6*cm])
-        table_fin.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
-        story.append(table_fin)
-        story.append(Spacer(1, 1*cm))
-
-        # Seção: Planejado vs Realizado por Categoria
-        if categorias_resumo:
-            story.append(Paragraph("2. Planejado vs Realizado por Categoria", styles['Heading2']))
-            story.append(Spacer(1, 0.3*cm))
-
-            cabecalho = ["Categoria", "Planejado", "Realizado", "Diferença", "% Exec."]
-            dados_cat = [cabecalho]
-            for cat in categorias_resumo:
-                dados_cat.append([
-                    cat["Categoria"],
-                    f"R$ {cat['Valor']:,.2f}",
-                    f"R$ {cat['Realizado']:,.2f}",
-                    f"R$ {cat['Diferença']:,.2f}",
-                    f"{cat['% Executado']:.1f}%"
-                ])
-
-            table_cat = Table(dados_cat, colWidths=[3.5*cm, 3*cm, 3*cm, 3*cm, 2.5*cm])
-            table_cat.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-            ]))
-            story.append(table_cat)
-            story.append(Spacer(1, 1*cm))
-        else:
-            story.append(Paragraph("2. Nenhum planejamento cadastrado para esta obra.", styles['Normal']))
+            if not planejamento_obra.empty:
+                planejamento_obra["Valor"] = pd.to_numeric(planejamento_obra["Valor"], errors="coerce")
+                realizado_cat = fluxo_obra.groupby("Categoria")["Valor"].sum().reset_index()
+                realizado_cat = realizado_cat.rename(columns={"Valor": "Realizado"})
+                comp = pd.merge(planejamento_obra, realizado_cat, on="Categoria", how="left")
+                comp["Realizado"] = comp["Realizado"].fillna(0)
+                comp["Diferença"] = comp["Valor"] - comp["Realizado"]
+                comp["% Executado"] = (comp["Realizado"] / comp["Valor"]) * 100
+                comp["% Executado"] = comp["% Executado"].clip(0, 100)
+                categorias_resumo = comp.to_dict("records")
+            else:
+                categorias_resumo = []
+    
+            # Histórico do diário
+            if not diario_obra.empty:
+                diario_obra["Data"] = pd.to_datetime(diario_obra["Data"], errors="coerce")
+                diario_obra = diario_obra.sort_values("Data", ascending=False).head(20)
+                eventos = diario_obra[["Data", "Responsavel", "Descricao"]].to_dict("records")
+            else:
+                eventos = []
+    
+            # Orçamentos da obra
+            if not orcamentos_obra.empty:
+                # Ordenar por data decrescente e formatar colunas
+                orcamentos_obra["Data"] = pd.to_datetime(orcamentos_obra["Data"], errors="coerce")
+                orcamentos_obra = orcamentos_obra.sort_values("Data", ascending=False)
+                orcamentos_lista = orcamentos_obra[["Data", "Fornecedor", "Total", "Arquivo"]].to_dict("records")
+            else:
+                orcamentos_lista = []
+    
+            # Informações adicionais
+            percentual_caixa = obras.loc[obras["Obra"] == obra_selecionada, "PercentualCaixa"].iloc[0]
+            data_geracao = datetime.now().strftime("%d/%m/%Y %H:%M")
+    
+            # Gerar PDF com reportlab
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            import io
+    
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
+            styles = getSampleStyleSheet()
+            story = []
+    
+            # Título
+            title_style = ParagraphStyle(
+                'TitleStyle',
+                parent=styles['Heading1'],
+                fontSize=20,
+                alignment=1,  # center
+                spaceAfter=20
+            )
+            story.append(Paragraph(f"Relatório da Obra: {obra_selecionada}", title_style))
             story.append(Spacer(1, 0.5*cm))
-
-        # Seção: Orçamentos da Obra
-        story.append(Paragraph("3. Orçamentos", styles['Heading2']))
-        story.append(Spacer(1, 0.3*cm))
-
-        if orcamentos_lista:
-            cabecalho_orc = ["Data", "Fornecedor", "Total", "Arquivo"]
-            dados_orc = [cabecalho_orc]
-            for orc in orcamentos_lista:
-                data_str = orc["Data"].strftime("%d/%m/%Y") if pd.notnull(orc["Data"]) else "-"
-                fornecedor = orc["Fornecedor"] if orc["Fornecedor"] and str(orc["Fornecedor"]).strip() != "" else "-"
-                total_str = f"R$ {orc['Total']:,.2f}" if pd.notnull(orc["Total"]) else "R$ 0,00"
-                arquivo_str = orc["Arquivo"] if orc["Arquivo"] else "-"
-                # Truncar nome do arquivo para não estourar a célula
-                if len(arquivo_str) > 30:
-                    arquivo_str = arquivo_str[:27] + "..."
-                dados_orc.append([data_str, fornecedor, total_str, arquivo_str])
-
-            table_orc = Table(dados_orc, colWidths=[2.5*cm, 4.5*cm, 3*cm, 5*cm])
-            table_orc.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+    
+            # Data de geração
+            story.append(Paragraph(f"<i>Gerado em {data_geracao}</i>", styles['Normal']))
+            story.append(Spacer(1, 1*cm))
+    
+            # Seção: Resumo Financeiro
+            story.append(Paragraph("1. Resumo Financeiro", styles['Heading2']))
+            story.append(Spacer(1, 0.3*cm))
+    
+            dados_financeiros = [
+                ["Receita Total", f"R$ {receita_total:,.2f}"],
+                ["Custo Total", f"R$ {custo_total:,.2f}"],
+                ["Lucro Líquido", f"R$ {lucro_total:,.2f}"],
+                ["Margem de Lucro", f"{margem:.1f}%"],
+                ["% Caixa Retido", f"{percentual_caixa:.1f}%"],
+                ["Valor Retido (Caixa)", f"R$ {lucro_total * percentual_caixa / 100:,.2f}"],
+                ["Valor a Distribuir", f"R$ {lucro_total * (1 - percentual_caixa/100):,.2f}"]
+            ]
+    
+            table_fin = Table(dados_financeiros, colWidths=[6*cm, 6*cm])
+            table_fin.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
             ]))
-            story.append(table_orc)
-        else:
-            story.append(Paragraph("Nenhum orçamento cadastrado para esta obra.", styles['Normal']))
-
-        story.append(Spacer(1, 1*cm))
-
-        # Seção: Histórico do Diário de Obra
-        story.append(Paragraph("4. Histórico de Eventos (últimas 20 entradas)", styles['Heading2']))
-        story.append(Spacer(1, 0.3*cm))
-
-        if eventos:
-            dados_eventos = [["Data", "Responsável", "Descrição"]]
-            for ev in eventos:
-                dados_eventos.append([
-                    ev["Data"].strftime("%d/%m/%Y") if pd.notnull(ev["Data"]) else "-",
-                    ev["Responsavel"] if ev["Responsavel"] else "-",
-                    ev["Descricao"][:80] + ("..." if len(ev["Descricao"]) > 80 else "")
-                ])
-
-            table_eventos = Table(dados_eventos, colWidths=[2.5*cm, 3.5*cm, 10*cm])
-            table_eventos.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-            ]))
-            story.append(table_eventos)
-        else:
-            story.append(Paragraph("Nenhum evento registrado no diário de obra.", styles['Normal']))
-
-        # Rodapé
-        story.append(Spacer(1, 1.5*cm))
-        story.append(Paragraph("<i>Relatório gerado automaticamente pelo Sistema Magnum Engenharia</i>", styles['Italic']))
-
-        # Construir PDF
-        doc.build(story)
-        buffer.seek(0)
+            story.append(table_fin)
+            story.append(Spacer(1, 1*cm))
+    
+            # Seção: Planejado vs Realizado por Categoria
+            if categorias_resumo:
+                story.append(Paragraph("2. Planejado vs Realizado por Categoria", styles['Heading2']))
+                story.append(Spacer(1, 0.3*cm))
+    
+                cabecalho = ["Categoria", "Planejado", "Realizado", "Diferença", "% Exec."]
+                dados_cat = [cabecalho]
+                for cat in categorias_resumo:
+                    dados_cat.append([
+                        cat["Categoria"],
+                        f"R$ {cat['Valor']:,.2f}",
+                        f"R$ {cat['Realizado']:,.2f}",
+                        f"R$ {cat['Diferença']:,.2f}",
+                        f"{cat['% Executado']:.1f}%"
+                    ])
+    
+                table_cat = Table(dados_cat, colWidths=[3.5*cm, 3*cm, 3*cm, 3*cm, 2.5*cm])
+                table_cat.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+                ]))
+                story.append(table_cat)
+                story.append(Spacer(1, 1*cm))
+            else:
+                story.append(Paragraph("2. Nenhum planejamento cadastrado para esta obra.", styles['Normal']))
+                story.append(Spacer(1, 0.5*cm))
+    
+            # Seção: Orçamentos da Obra
+            story.append(Paragraph("3. Orçamentos", styles['Heading2']))
+            story.append(Spacer(1, 0.3*cm))
+    
+            if orcamentos_lista:
+                cabecalho_orc = ["Data", "Fornecedor", "Total", "Arquivo"]
+                dados_orc = [cabecalho_orc]
+                for orc in orcamentos_lista:
+                    data_str = orc["Data"].strftime("%d/%m/%Y") if pd.notnull(orc["Data"]) else "-"
+                    fornecedor = orc["Fornecedor"] if orc["Fornecedor"] and str(orc["Fornecedor"]).strip() != "" else "-"
+                    total_str = f"R$ {orc['Total']:,.2f}" if pd.notnull(orc["Total"]) else "R$ 0,00"
+                    arquivo_str = orc["Arquivo"] if orc["Arquivo"] else "-"
+                    # Truncar nome do arquivo para não estourar a célula
+                    if len(arquivo_str) > 30:
+                        arquivo_str = arquivo_str[:27] + "..."
+                    dados_orc.append([data_str, fornecedor, total_str, arquivo_str])
+    
+                table_orc = Table(dados_orc, colWidths=[2.5*cm, 4.5*cm, 3*cm, 5*cm])
+                table_orc.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+                ]))
+                story.append(table_orc)
+            else:
+                story.append(Paragraph("Nenhum orçamento cadastrado para esta obra.", styles['Normal']))
+    
+            story.append(Spacer(1, 1*cm))
+    
+            # Seção: Histórico do Diário de Obra
+            story.append(Paragraph("4. Histórico de Eventos (últimas 20 entradas)", styles['Heading2']))
+            story.append(Spacer(1, 0.3*cm))
+    
+            if eventos:
+                dados_eventos = [["Data", "Responsável", "Descrição"]]
+                for ev in eventos:
+                    dados_eventos.append([
+                        ev["Data"].strftime("%d/%m/%Y") if pd.notnull(ev["Data"]) else "-",
+                        ev["Responsavel"] if ev["Responsavel"] else "-",
+                        ev["Descricao"][:80] + ("..." if len(ev["Descricao"]) > 80 else "")
+                    ])
+    
+                table_eventos = Table(dados_eventos, colWidths=[2.5*cm, 3.5*cm, 10*cm])
+                table_eventos.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+                ]))
+                story.append(table_eventos)
+            else:
+                story.append(Paragraph("Nenhum evento registrado no diário de obra.", styles['Normal']))
+    
+            # Rodapé
+            story.append(Spacer(1, 1.5*cm))
+            story.append(Paragraph("<i>Relatório gerado automaticamente pelo Sistema Magnum Engenharia</i>", styles['Italic']))
+    
+            # Construir PDF
+            doc.build(story)
+            buffer.seek(0)
 
         # Botão de download
         st.download_button(
